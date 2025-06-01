@@ -74,15 +74,14 @@ class TemporalFeatureTransformer(BaseEstimator, TransformerMixin):
 class HolidayFeatureTransformer(BaseEstimator, TransformerMixin):
     """Create holiday features from holidays dataset"""
 
-    def __init__(self, holiday_df_path=f"{RAW_DATA_DIR}/holidays_events.csv", date_column="date"):
-        self.holiday_df_path = holiday_df_path
+    def __init__(self, date_column="date"):
         self.date_column = date_column
-        self.holiday_sets = {}
 
     def fit(self, X, y=None):
-        # Load and process holidays data
-        holiday_df = pd.read_csv(self.holiday_df_path, parse_dates=["date"])
+        return self
 
+    def set_holiday_sets(self, holiday_df: pd.DataFrame):
+        """Set custom holiday DataFrame"""
         self.holiday_sets = {
             "national_holidays": holiday_df[holiday_df["locale"] == "National"]["date"].unique(),
             "regional_holidays": holiday_df[holiday_df["locale"] == "Regional"]["date"].unique(),
@@ -93,7 +92,6 @@ class HolidayFeatureTransformer(BaseEstimator, TransformerMixin):
             "bridge_days": holiday_df[holiday_df["type"] == "Bridge"]["date"].unique(),
             "transferred_days": holiday_df[holiday_df["transferred"]]["date"].unique(),
         }
-        return self
 
     def transform(self, X):
         X = X.copy()
@@ -126,31 +124,41 @@ class HolidayFeatureTransformer(BaseEstimator, TransformerMixin):
 
         return X
 
+    def fit_transform(self, X, y=None):
+        """Fit and transform the data"""
+        return self.fit(X).transform(X)
+
 
 class LagFeatureTransformer(BaseEstimator, TransformerMixin):
     def __init__(
         self, target_col="sales", lags=[1, 7, 14, 30], group_cols=["store_nbr", "family"]
     ):
         self.target_col = target_col
-        self.lags = lags
+        self.lags = sorted(lags)
         self.group_cols = group_cols
-        self.train_df_ = None
 
     def fit(self, X, y=None):
-        # Save training data for future use
-        self.train_df_ = X.copy()
+        max_lag = max(self.lags)
+        X_sorted = X.sort_values(self.group_cols + ["date"])
+        self.history_ = (
+            X_sorted.groupby(self.group_cols)
+            .tail(max_lag)
+            .copy()[self.group_cols + ["date", self.target_col]]
+            .reset_index(drop=True)
+        )
         return self
+
+    def set_mode(self, is_train=True):
+        """Set mode for training or prediction"""
+        self.is_train = is_train
 
     def transform(self, X):
         X = X.copy()
 
-        # Determine if we're in training or prediction phase
-        is_train = self.train_df_ is None or X.equals(self.train_df_)
-
-        if is_train:
+        if self.is_train:
             df = X.sort_values(self.group_cols + ["date"])
         else:
-            df = pd.concat([self.train_df_, X], ignore_index=True)
+            df = pd.concat([self.history_, X], ignore_index=True)
             df = df.sort_values(self.group_cols + ["date"])
 
         for lag in self.lags:
@@ -158,7 +166,7 @@ class LagFeatureTransformer(BaseEstimator, TransformerMixin):
                 self.target_col
             ].shift(lag)
 
-        if is_train:
+        if self.is_train:
             return df
         else:
             test_start_date = X["date"].min()
@@ -167,36 +175,50 @@ class LagFeatureTransformer(BaseEstimator, TransformerMixin):
 
 class RollingFeatureTransformer(BaseEstimator, TransformerMixin):
     """
-    Automatically apply rolling features in training or test mode.
-
-    - In training mode (when fit has not been called), features are computed directly on X.
-    - In test mode (when fit has been called), features are computed by concatenating X with stored train_df,
-      and then only the test portion is returned.
+    Memory-optimized rolling feature transformer that stores only necessary tail data per group.
     """
 
     def __init__(
         self, target_col="sales", windows=[7, 14, 30], group_cols=["store_nbr", "family"]
     ):
         self.target_col = target_col
-        self.windows = windows
+        self.windows = sorted(windows)
         self.group_cols = group_cols
-        self.train_df = None
+        self.is_train = True
 
     def fit(self, X, y=None):
-        # Store training data for test mode
-        self.train_df = X.copy()
+        X = X.copy()
+        X = X.sort_values(self.group_cols + ["date"])
+
+        # Only store the last max(windows) rows per group for future rolling calculations
+        max_window = max(self.windows)
+        self.recent_history_ = (
+            X.groupby(self.group_cols, group_keys=False).tail(max_window).reset_index(drop=True)
+        )
+
         return self
 
+    def set_mode(self, is_train=True):
+        """Set mode for training or prediction"""
+        self.is_train = is_train
+        if is_train:
+            self.recent_history_ = None
+
     def transform(self, X):
-        if self.train_df is None or X.equals(self.train_df):
-            # Training mode
-            df = X.copy()
-            df = df.sort_values(self.group_cols + ["date"])
+        X = X.copy()
+        X = X.sort_values(self.group_cols + ["date"])
+
+        # Determine if we're in training or prediction phase
+
+        if self.is_train:
+            # Training phase - compute rolling features directly
+            df = X
         else:
-            # Test mode
-            df = pd.concat([self.train_df, X], ignore_index=True)
+            # Test phase - combine with only necessary recent history
+            df = pd.concat([self.recent_history_, X], ignore_index=True)
             df = df.sort_values(self.group_cols + ["date"])
 
+        # Create rolling features
         for window in self.windows:
             for func, name in [
                 (lambda x: x.rolling(window=window, min_periods=1).mean(), "mean"),
@@ -207,40 +229,37 @@ class RollingFeatureTransformer(BaseEstimator, TransformerMixin):
                 col_name = f"{self.target_col}_rolling_{name}_{window}"
                 df[col_name] = df.groupby(self.group_cols)[self.target_col].transform(func)
 
-        if self.train_df is not None:
-            # Return only the test portion
-            test_start = X["date"].min()
-            df = df[df["date"] >= test_start].copy()
+        if self.is_train:
+            return df
+        else:
+            # Return only the test data portion
+            test_start_date = X["date"].min()
+            return df[df["date"] >= test_start_date].copy()
 
-        return df
 
 # TODO: call function to handle missing date indices in external data
 class ExternalDataMerger(BaseEstimator, TransformerMixin):
     """Merge external datasets (oil, stores, transactions)"""
 
-    def __init__(
-        self,
-        oil_df_path=f"{RAW_DATA_DIR}/oil.csv",
-        stores_df_path=f"{RAW_DATA_DIR}/stores.csv",
-        transactions_df_path=f"{RAW_DATA_DIR}/transactions.csv",
-    ):
-        self.oil_df_path = oil_df_path
-        self.stores_df_path = stores_df_path
-        self.transactions_df_path = transactions_df_path
-        self.oil_df = None
-        self.stores_df = None
-        self.transactions_df = None
+    def __init__(self, date_column="date"):
+        self.date_column = date_column
+
+    def set_dataframes(self, oil_df, stores_df, transactions_df):
+        """Set external dataframes directly"""
+        self.oil_df = oil_df
+        self.stores_df = stores_df
+        self.transactions_df = transactions_df
 
     def fit(self, X):
-        # Load and preprocess external data
-        self.oil_df = pd.read_csv(self.oil_df_path, parse_dates=["date"])
-        self.stores_df = pd.read_csv(self.stores_df_path)
-        self.transactions_df = pd.read_csv(self.transactions_df_path, parse_dates=["date"])
-
         # Interpolate missing oil prices
-        all_dates = pd.date_range(start=self.oil_df["date"].min(), end=self.oil_df["date"].max())
+        all_dates = pd.date_range(
+            start=self.oil_df[self.date_column].min(), end=self.oil_df[self.date_column].max()
+        )
         self.oil_df = (
-            self.oil_df.set_index("date").reindex(all_dates).rename_axis("date").reset_index()
+            self.oil_df.set_index(self.date_column)
+            .reindex(all_dates)
+            .rename_axis(self.date_column)
+            .reset_index()
         )
         self.oil_df["dcoilwtico"] = self.oil_df["dcoilwtico"].interpolate(
             method="polynomial", order=2
@@ -321,6 +340,15 @@ def create_training_pipeline():
             ("rolling_features", RollingFeatureTransformer()),
             ("null_handler", NullHandlerTransformer()),
         ]
+    )
+    pipeline.named_steps["lag_features"].set_mode(is_train=True)
+    pipeline.named_steps["holiday_features"].set_holiday_sets(
+        pd.read_csv(f"{RAW_DATA_DIR}/holidays_events.csv", parse_dates=["date"])
+    )
+    pipeline.named_steps["external_data"].set_dataframes(
+        pd.read_csv(f"{RAW_DATA_DIR}/oil.csv", parse_dates=["date"]),
+        pd.read_csv(f"{RAW_DATA_DIR}/stores.csv"),
+        pd.read_csv(f"{RAW_DATA_DIR}/transactions.csv", parse_dates=["date"]),
     )
 
     return pipeline
