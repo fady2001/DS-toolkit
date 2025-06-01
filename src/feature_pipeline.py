@@ -214,48 +214,6 @@ class RollingFeatureTransformer(BaseEstimator, TransformerMixin):
 
         return df
 
-
-class OldRollingFeatureTransformer(BaseEstimator, TransformerMixin):
-    """Create rolling window statistics"""
-
-    def __init__(
-        self, target_col="sales", windows=[7, 14, 30], group_cols=["store_nbr", "family"]
-    ):
-        self.target_col = target_col
-        self.windows = windows
-        self.group_cols = group_cols
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        X = X.copy()
-        X_sorted = X.sort_values(self.group_cols + ["date"])
-
-        for window in self.windows:
-            # Rolling mean
-            X_sorted[f"{self.target_col}_rolling_mean_{window}"] = X_sorted.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).mean())
-
-            # Rolling std
-            X_sorted[f"{self.target_col}_rolling_std_{window}"] = X_sorted.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).std())
-
-            # Rolling max
-            X_sorted[f"{self.target_col}_rolling_max_{window}"] = X_sorted.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).max())
-
-            # Rolling min
-            X_sorted[f"{self.target_col}_rolling_min_{window}"] = X_sorted.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).min())
-
-        return X_sorted
-
-
 # TODO: call function to handle missing date indices in external data
 class ExternalDataMerger(BaseEstimator, TransformerMixin):
     """Merge external datasets (oil, stores, transactions)"""
