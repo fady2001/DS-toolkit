@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 
-from config import RAW_DATA_DIR
+from src.config import RAW_DATA_DIR
 
 warnings.filterwarnings("ignore")
 
@@ -236,6 +236,7 @@ class RollingFeatureTransformer(BaseEstimator, TransformerMixin):
             test_start_date = X["date"].min()
             return df[df["date"] >= test_start_date].copy()
 
+
 class ExternalDataMerger(BaseEstimator, TransformerMixin):
     """Merge external datasets (oil, stores, transactions)"""
 
@@ -256,8 +257,9 @@ class ExternalDataMerger(BaseEstimator, TransformerMixin):
     def fit(self, X):
         # save mean of transactions for store_nbr
         if self.is_train:
-            self.transactions_mean_ = (X.groupby("store_nbr")["transactions"].mean().reset_index()).rename(
-                columns={"transactions": "transactions_mean"})
+            self.transactions_mean_ = (
+                self.transactions_df.groupby("store_nbr")["transactions"].mean().reset_index()
+            ).rename(columns={"transactions": "transactions_mean"})
         return self
 
     def transform(self, X):
@@ -277,7 +279,7 @@ class ExternalDataMerger(BaseEstimator, TransformerMixin):
             method="polynomial", order=2
         )
         self.oil_df["dcoilwtico"] = self.oil_df["dcoilwtico"].bfill()
-        
+
         # Merge oil data
         X = X.merge(self.oil_df, on="date", how="left")
 
@@ -337,7 +339,12 @@ class NullHandlerTransformer(BaseEstimator, TransformerMixin):
         return X
 
 
-def create_training_pipeline():
+def create_features_pipeline(
+    holiday_df: pd.DataFrame = None,
+    oil_df: pd.DataFrame = None,
+    stores_df: pd.DataFrame = None,
+    transactions_df: pd.DataFrame = None,
+):
     """Create complete feature engineering pipeline for training data"""
 
     pipeline = Pipeline(
@@ -352,12 +359,12 @@ def create_training_pipeline():
     )
     pipeline.named_steps["lag_features"].set_mode(is_train=True)
     pipeline.named_steps["holiday_features"].set_holiday_sets(
-        pd.read_csv(f"{RAW_DATA_DIR}/holidays_events.csv", parse_dates=["date"])
+        holiday_df if holiday_df is not None else pd.read_csv(f"{RAW_DATA_DIR}/holidays.csv")
     )
     pipeline.named_steps["external_data"].set_dataframes(
-        pd.read_csv(f"{RAW_DATA_DIR}/oil.csv", parse_dates=["date"]),
-        pd.read_csv(f"{RAW_DATA_DIR}/stores.csv"),
-        pd.read_csv(f"{RAW_DATA_DIR}/transactions.csv", parse_dates=["date"]),
+        oil_df if oil_df is not None else pd.read_csv(f"{RAW_DATA_DIR}/oil.csv"),
+        stores_df if stores_df is not None else pd.read_csv(f"{RAW_DATA_DIR}/stores.csv"),
+        transactions_df if transactions_df is not None else pd.read_csv(f"{RAW_DATA_DIR}/transactions.csv"),
     )
 
     return pipeline
@@ -435,7 +442,7 @@ if __name__ == "__main__":
     print("8. TestDataRollingTransformer - Safe rolling features for test data")
 
     print("\nPipelines:")
-    print("- create_training_pipeline() - Complete training pipeline")
+    print("- create_features_pipeline() - Complete training pipeline")
     print("- create_test_pipeline() - Test pipeline avoiding data leakage")
 
     # Show feature categories
@@ -446,7 +453,7 @@ if __name__ == "__main__":
 
     # apply the training pipeline to a sample DataFrame
     train_df = pd.read_csv(f"{RAW_DATA_DIR}/train.csv", parse_dates=["date"])
-    train_pipeline = create_training_pipeline()
+    train_pipeline = create_features_pipeline()
     transformed_train_df = train_pipeline.fit_transform(train_df)
     print("\nTransformed Training DataFrame:")
     print(transformed_train_df.columns)

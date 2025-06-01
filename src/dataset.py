@@ -20,6 +20,31 @@ def load_dataset(dataset_path: str) -> pd.DataFrame:
 
     return pd.read_csv(dataset_path)
 
+def scrap_directory(
+    directory: str,
+    file_extension: str = ".csv",
+) -> Dict[str, pd.DataFrame]:
+    """
+    Scrape all CSV files in a directory and return them as a dictionary of DataFrames.
+
+    Args:
+        directory (str): The path to the directory containing CSV files.
+        file_extension (str): The file extension to filter files by (default is '.csv').
+
+    Returns:
+        Dict[str, pd.DataFrame]: A dictionary where keys are file names and values are DataFrames.
+    """
+    directory: Path = Path(directory)
+    if not directory.is_dir():
+        raise NotADirectoryError(f"Provided path is not a directory: {directory}")
+
+    dataframes: Dict[str, pd.DataFrame] = {}
+    for file_path in directory.glob(f"*{file_extension}"):
+        df_name = file_path.stem
+        dataframes[df_name] = pd.read_csv(file_path)
+
+    return dataframes
+
 
 def handle_missing_date_indicies(
     df: pd.DataFrame,

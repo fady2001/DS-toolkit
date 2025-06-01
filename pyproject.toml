@@ -21,6 +21,7 @@ dependencies = [
     "mkdocs",
     "pandas>=2.2.3",
     "pip",
+    "pyarrow>=20.0.0",
     "python-dotenv",
     "ruff",
     "scipy>=1.15.3",
