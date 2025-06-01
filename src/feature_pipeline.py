@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 
-from src.config import RAW_DATA_DIR
+from config import RAW_DATA_DIR
 
 warnings.filterwarnings("ignore")
 
@@ -65,8 +65,8 @@ class TemporalFeatureTransformer(BaseEstimator, TransformerMixin):
         X["days_until_payday"] = X[self.date_column].apply(days_until_payday)
 
         return X
-    
-    def fit_transform(self, X):
+
+    def fit_transform(self, X, y=None):
         """Fit and transform the data"""
         return self.fit(X).transform(X)
 
@@ -91,7 +91,7 @@ class HolidayFeatureTransformer(BaseEstimator, TransformerMixin):
             "working_days": holiday_df[holiday_df["type"] == "Work Day"]["date"].unique(),
             "events": holiday_df[holiday_df["type"] == "Event"]["date"].unique(),
             "bridge_days": holiday_df[holiday_df["type"] == "Bridge"]["date"].unique(),
-            "transferred_days": holiday_df[holiday_df["transferred"] is True]["date"].unique(),
+            "transferred_days": holiday_df[holiday_df["transferred"]]["date"].unique(),
         }
         return self
 
@@ -128,31 +128,94 @@ class HolidayFeatureTransformer(BaseEstimator, TransformerMixin):
 
 
 class LagFeatureTransformer(BaseEstimator, TransformerMixin):
-    """Create lag features for time series"""
-
     def __init__(
         self, target_col="sales", lags=[1, 7, 14, 30], group_cols=["store_nbr", "family"]
     ):
         self.target_col = target_col
         self.lags = lags
         self.group_cols = group_cols
+        self.train_df_ = None
 
     def fit(self, X, y=None):
+        # Save training data for future use
+        self.train_df_ = X.copy()
         return self
 
     def transform(self, X):
         X = X.copy()
-        X_sorted = X.sort_values(self.group_cols + ["date"])
+
+        # Determine if we're in training or prediction phase
+        is_train = self.train_df_ is None or X.equals(self.train_df_)
+
+        if is_train:
+            df = X.sort_values(self.group_cols + ["date"])
+        else:
+            df = pd.concat([self.train_df_, X], ignore_index=True)
+            df = df.sort_values(self.group_cols + ["date"])
 
         for lag in self.lags:
-            X_sorted[f"{self.target_col}_lag_{lag}"] = X_sorted.groupby(self.group_cols)[
+            df[f"{self.target_col}_lag_{lag}"] = df.groupby(self.group_cols)[
                 self.target_col
             ].shift(lag)
 
-        return X_sorted
+        if is_train:
+            return df
+        else:
+            test_start_date = X["date"].min()
+            return df[df["date"] >= test_start_date].copy()
 
 
 class RollingFeatureTransformer(BaseEstimator, TransformerMixin):
+    """
+    Automatically apply rolling features in training or test mode.
+
+    - In training mode (when fit has not been called), features are computed directly on X.
+    - In test mode (when fit has been called), features are computed by concatenating X with stored train_df,
+      and then only the test portion is returned.
+    """
+
+    def __init__(
+        self, target_col="sales", windows=[7, 14, 30], group_cols=["store_nbr", "family"]
+    ):
+        self.target_col = target_col
+        self.windows = windows
+        self.group_cols = group_cols
+        self.train_df = None
+
+    def fit(self, X, y=None):
+        # Store training data for test mode
+        self.train_df = X.copy()
+        return self
+
+    def transform(self, X):
+        if self.train_df is None or X.equals(self.train_df):
+            # Training mode
+            df = X.copy()
+            df = df.sort_values(self.group_cols + ["date"])
+        else:
+            # Test mode
+            df = pd.concat([self.train_df, X], ignore_index=True)
+            df = df.sort_values(self.group_cols + ["date"])
+
+        for window in self.windows:
+            for func, name in [
+                (lambda x: x.rolling(window=window, min_periods=1).mean(), "mean"),
+                (lambda x: x.rolling(window=window, min_periods=1).std(), "std"),
+                (lambda x: x.rolling(window=window, min_periods=1).max(), "max"),
+                (lambda x: x.rolling(window=window, min_periods=1).min(), "min"),
+            ]:
+                col_name = f"{self.target_col}_rolling_{name}_{window}"
+                df[col_name] = df.groupby(self.group_cols)[self.target_col].transform(func)
+
+        if self.train_df is not None:
+            # Return only the test portion
+            test_start = X["date"].min()
+            df = df[df["date"] >= test_start].copy()
+
+        return df
+
+
+class OldRollingFeatureTransformer(BaseEstimator, TransformerMixin):
     """Create rolling window statistics"""
 
     def __init__(
@@ -192,15 +255,16 @@ class RollingFeatureTransformer(BaseEstimator, TransformerMixin):
 
         return X_sorted
 
-#TODO: call function to handle missing date indices in external data
+
+# TODO: call function to handle missing date indices in external data
 class ExternalDataMerger(BaseEstimator, TransformerMixin):
     """Merge external datasets (oil, stores, transactions)"""
 
     def __init__(
         self,
-        oil_df_path="../data/raw/oil.csv",
-        stores_df_path="../data/raw/stores.csv",
-        transactions_df_path="../data/raw/transactions.csv",
+        oil_df_path=f"{RAW_DATA_DIR}/oil.csv",
+        stores_df_path=f"{RAW_DATA_DIR}/stores.csv",
+        transactions_df_path=f"{RAW_DATA_DIR}/transactions.csv",
     ):
         self.oil_df_path = oil_df_path
         self.stores_df_path = stores_df_path
@@ -245,93 +309,10 @@ class ExternalDataMerger(BaseEstimator, TransformerMixin):
         return X
 
 
-
-class TestDataLagTransformer(BaseEstimator, TransformerMixin):
-    """Create lag features for test data using training data to avoid leakage"""
-
-    def __init__(
-        self, target_col="sales", lags=[1, 7, 14, 30], group_cols=["store_nbr", "family"]
-    ):
-        self.target_col = target_col
-        self.lags = lags
-        self.group_cols = group_cols
-        self.train_df = None
-
-    def fit(self, X, y=None):
-        # Store training data for creating test features
-        self.train_df = X.copy()
-        return self
-
-    def transform(self, X):
-        # Combine train and test for consistent processing
-        combined_df = pd.concat([self.train_df, X], ignore_index=True)
-        combined_df = combined_df.sort_values(self.group_cols + ["date"])
-
-        # Create lag features
-        for lag in self.lags:
-            combined_df[f"{self.target_col}_lag_{lag}"] = combined_df.groupby(self.group_cols)[
-                self.target_col
-            ].shift(lag)
-
-        # Return only test data portion
-        test_start_date = X["date"].min()
-        test_with_lags = combined_df[combined_df["date"] >= test_start_date].copy()
-
-        return test_with_lags
-
-
-class TestDataRollingTransformer(BaseEstimator, TransformerMixin):
-    """Create rolling features for test data using training data"""
-
-    def __init__(
-        self, target_col="sales", windows=[7, 14, 30], group_cols=["store_nbr", "family"]
-    ):
-        self.target_col = target_col
-        self.windows = windows
-        self.group_cols = group_cols
-        self.train_df = None
-
-    def fit(self, X, y=None):
-        self.train_df = X.copy()
-        return self
-
-    def transform(self, X):
-        # Combine train and test data
-        combined_df = pd.concat([self.train_df, X], ignore_index=True)
-        combined_df = combined_df.sort_values(self.group_cols + ["date"])
-
-        for window in self.windows:
-            # Rolling mean
-            combined_df[f"{self.target_col}_rolling_mean_{window}"] = combined_df.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).mean())
-
-            # Rolling std
-            combined_df[f"{self.target_col}_rolling_std_{window}"] = combined_df.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).std())
-
-            # Rolling max
-            combined_df[f"{self.target_col}_rolling_max_{window}"] = combined_df.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).max())
-
-            # Rolling min
-            combined_df[f"{self.target_col}_rolling_min_{window}"] = combined_df.groupby(
-                self.group_cols
-            )[self.target_col].transform(lambda x: x.rolling(window=window, min_periods=1).min())
-
-        # Return only test data portion
-        test_start_date = X["date"].min()
-        test_with_rolling = combined_df[combined_df["date"] >= test_start_date].copy()
-
-        return test_with_rolling
-
-
 class NullHandlerTransformer(BaseEstimator, TransformerMixin):
     """Handle null values for prediction"""
 
-    def __init__(self, strategy="comprehensive"):
+    def __init__(self, strategy="drop"):
         self.strategy = strategy
 
     def fit(self, X, y=None):
@@ -339,6 +320,9 @@ class NullHandlerTransformer(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         X = X.copy()
+        if self.strategy == "drop":
+            # Drop rows with any nulls
+            return X.dropna()
 
         if self.strategy == "comprehensive":
             # Forward fill lag features within groups
@@ -375,37 +359,13 @@ def create_training_pipeline():
             ("temporal_features", TemporalFeatureTransformer()),
             ("holiday_features", HolidayFeatureTransformer()),
             ("external_data", ExternalDataMerger()),
-            ("rolling_features", RollingFeatureTransformer()),
             ("lag_features", LagFeatureTransformer()),
+            ("rolling_features", RollingFeatureTransformer()),
             ("null_handler", NullHandlerTransformer()),
         ]
     )
 
     return pipeline
-
-
-def create_test_pipeline(train_df):
-    """Create feature engineering pipeline for test data to avoid leakage"""
-
-    # First, create features that don't depend on target variable
-    base_pipeline = Pipeline(
-        [
-            ("temporal_features", TemporalFeatureTransformer()),
-            ("holiday_features", HolidayFeatureTransformer()),
-            ("external_data", ExternalDataMerger()),
-        ]
-    )
-
-    # Then create target-dependent features using training data
-    target_pipeline = Pipeline(
-        [
-            ("test_rolling_features", TestDataRollingTransformer()),
-            ("test_lag_features", TestDataLagTransformer()),
-            ("null_handler", NullHandlerTransformer()),
-        ]
-    )
-
-    return base_pipeline, target_pipeline
 
 
 def get_feature_columns():
@@ -485,13 +445,14 @@ if __name__ == "__main__":
 
     # Show feature categories
     features = get_feature_columns()
-    print(f"\nFeature categories:")
+    print("\nFeature categories:")
     for category, cols in features.items():
         print(f"{category}: {len(cols)} features")
-        
+
     # apply the training pipeline to a sample DataFrame
-    train_df = pd.read_csv("../data/raw/train.csv", parse_dates=["date"])
+    train_df = pd.read_csv(f"{RAW_DATA_DIR}/train.csv", parse_dates=["date"])
     train_pipeline = create_training_pipeline()
     transformed_train_df = train_pipeline.fit_transform(train_df)
     print("\nTransformed Training DataFrame:")
-    print(transformed_train_df.head())
+    print(transformed_train_df.columns)
+    transformed_train_df.to_csv(f"{RAW_DATA_DIR}/transformed_train.csv", index=False)
