@@ -1,6 +1,6 @@
 import lightgbm as lgb
 
-from utils import rmsle_score, split_time_series_data
+from src.utils import rmsle_score, split_time_series_data
 
 
 def train_model_for_each_family(train_df):
@@ -30,7 +30,7 @@ def train_model_for_each_family(train_df):
         
         # Split the data into training and validation sets
         X_train, X_val, y_train, y_val = split_time_series_data(X, y)
-        
+        print(X_train.columns)
         # Define LightGBM parameters
         params = {
             'objective': 'regression',
@@ -49,7 +49,7 @@ def train_model_for_each_family(train_df):
         lgb_val = lgb.Dataset(X_val, y_val, reference=lgb_train)
         
         # Train the model
-        model = lgb.train(params, lgb_train, valid_sets=[lgb_val], num_boost_round=1000, early_stopping_rounds=50)
+        model = lgb.train(params, lgb_train, valid_sets=[lgb_val], num_boost_round=100)
         
         # Make predictions on the validation set
         y_pred = model.predict(X_val, num_iteration=model.best_iteration)

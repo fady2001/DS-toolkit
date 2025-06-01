@@ -16,6 +16,7 @@ classifiers = [
     
 ]
 dependencies = [
+    "lightgbm>=4.6.0",
     "loguru",
     "matplotlib>=3.10.3",
     "mkdocs",

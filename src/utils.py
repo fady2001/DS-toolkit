@@ -11,7 +11,7 @@ def rmsle_score(y_true, y_pred):
     y_pred_log = np.log1p(np.maximum(y_pred, epsilon))
     return np.sqrt(mean_squared_error(y_true_log, y_pred_log))
 
-def split_time_series_data(X,y,date_col="date",train_ratio=0.8):
+def split_time_series_data(X,y,train_ratio=0.8):
     """
     Split a time series DataFrame into training and validation sets based on a date column.
     
@@ -26,11 +26,6 @@ def split_time_series_data(X,y,date_col="date",train_ratio=0.8):
     - y_train: Training target variable.
     - y_val: Validation target variable.
     """
-    # Ensure the date column is in datetime format
-    X[date_col] = pd.to_datetime(X[date_col])
-    
-    # Sort the data by date
-    X = X.sort_values(by=date_col)
     y = y[X.index]  # Align y with sorted X
     
     # Calculate the split index

@@ -25,12 +25,15 @@ class Preprocessor:
     def fit(self, X: pd.DataFrame) -> "Preprocessor":
         transformers = []
 
-        transformers.append(("drop_columns", "drop", self.pipeline_config.get("drop", [])))
+        if self.pipeline_config.get("drop"):
+            transformers.append(("drop_columns", "drop", self.pipeline_config["drop"]))
         transformers.extend(self.__create_encode_steps())
         transformers.extend(self.__create_scaling_steps())
         transformers.extend(self.__create_imputing_steps())
 
-        preprocessor = ColumnTransformer(transformers=transformers)
+        # Use remainder='passthrough' to include all columns in the output
+        preprocessor = ColumnTransformer(transformers=transformers, remainder="passthrough")
+        print("transformers:", transformers)
 
         self.pipeline = preprocessor.fit(X)
         return self
@@ -130,27 +133,40 @@ class Preprocessor:
                         )
         return imputing_steps
 
-    def get_feature_names_from_preprocessor(self) -> List[str]:
+    def get_feature_names_from_preprocessor(self) -> Dict[str,Tuple[str]]:
         """
-        Extract feature names from a ColumnTransformer after encoding.
+        Extract feature names from a ColumnTransformer after preprocessing and return a dictionary contains.
+        {"drop": [columns],
+         "onehot": [onehot_encoded_columns],
+         "ordinal": [ordinal_encoded_columns],
+         "target": [target_encoded_columns],
+         "scaling": [scaled_columns],
+         "imputation": [imputed_columns]}
 
         Parameters:
         - preprocessor: The fitted ColumnTransformer object.
 
         Returns:
-        - A list of feature names.
+        - Dict[str, Tuple[str]]: A dictionary with keys as the transformation type and values as tuples of feature names.
         """
-        feature_names = []
+        if self.pipeline is None:
+            raise ValueError("Pipeline not fitted. Call fit() before get_feature_names_from_preprocessor().")
+
+        feature_names = {}
         for name, transformer, columns in self.pipeline.transformers_:
-            if transformer == "drop" or transformer is None:
-                continue  # Skip dropped columns
-            elif hasattr(transformer, "get_feature_names_out"):
-                # For transformers like OneHotEncoder
-                feature_names.extend(transformer.get_feature_names_out(columns))
-            else:
-                # For other transformers, use the column names directly
-                feature_names.extend(columns)
+            if name == "drop_columns":
+                feature_names["drop"] = columns
+            elif isinstance(transformer, (OneHotEncoder, OrdinalEncoder, TargetEncoder)):
+                feature_names.setdefault(name, []).extend(transformer.get_feature_names_out(columns).tolist())
+            elif isinstance(transformer, (MinMaxScaler, StandardScaler, RobustScaler)):
+                feature_names.setdefault(name,[]).extend(columns)
+            elif isinstance(transformer, SimpleImputer):
+                if hasattr(transformer, "get_feature_names_out"):
+                    feature_names.setdefault(name, []).extend(transformer.get_feature_names_out(columns).tolist())
+                else:
+                    feature_names.setdefault(name, []).extend(columns)
         return feature_names
+        
 
 
 # if __name__ == "__main__":
@@ -179,4 +195,3 @@ class Preprocessor:
 #     data = transformed_df[encoded_categorical_cols].copy()
 
 #     data.to_csv(f"{INTERIM_DATA_DIR}/encoded_train.csv", index=False)
-
