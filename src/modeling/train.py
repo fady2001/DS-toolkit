@@ -1,30 +1,78 @@
-from pathlib import Path
+import lightgbm as lgb
 
-from loguru import logger
-from tqdm import tqdm
-import typer
-
-from src.config import MODELS_DIR, PROCESSED_DATA_DIR
-
-app = typer.Typer()
+from src.utils import rmsle_score, split_time_series_data
 
 
-@app.command()
-def main(
-    # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
-    features_path: Path = PROCESSED_DATA_DIR / "features.csv",
-    labels_path: Path = PROCESSED_DATA_DIR / "labels.csv",
-    model_path: Path = MODELS_DIR / "model.pkl",
-    # -----------------------------------------
-):
-    # ---- REPLACE THIS WITH YOUR OWN CODE ----
-    logger.info("Training some model...")
-    for i in tqdm(range(10), total=10):
-        if i == 5:
-            logger.info("Something happened for iteration 5.")
-    logger.success("Modeling training complete.")
-    # -----------------------------------------
+def train_model_for_each_family(train_df):
+    """
+    Train a LightGBM model for each family in the training dataset.
 
+    Parameters:
+    - train_df: DataFrame containing the training data with 'family' and 'sales' columns.
+    - train: DataFrame containing the training data with features and 'family' column.
 
-if __name__ == "__main__":
-    app()
+    Returns:
+    - models: Dictionary containing trained models for each family.
+    """
+
+    # train a LightGBM model for each family
+    families = train_df["family"].unique()
+    models = {}
+    for family in families:
+        print(f"Training model for family: {family}")
+
+        # Filter the training data for the current family
+        family_data = train_df[train_df["family"] == family]
+
+        # Split the data into features and target variable
+        X = family_data.drop(columns=["sales", "family"])
+        y = family_data["sales"]
+
+        # Split the data into training and validation sets
+        X_train, X_val, y_train, y_val = split_time_series_data(X, y)
+        print(X_train.columns)
+        # Define LightGBM parameters
+        # params = {
+        #     'objective': 'regression',
+        #     'metric': 'rmse',
+        #     'boosting_type': 'gbdt',
+        #     'num_leaves': 31,
+        #     'learning_rate': 0.05,
+        #     'feature_fraction': 0.9,
+        #     'bagging_fraction': 0.8,
+        #     'bagging_freq': 5,
+        #     'verbose': -1
+        # }
+
+        # # Create a LightGBM dataset
+        # lgb_train = lgb.Dataset(X_train, y_train)
+        # lgb_val = lgb.Dataset(X_val, y_val, reference=lgb_train)
+
+        # # Train the model
+        # model = lgb.train(params, lgb_train, valid_sets=[lgb_val], num_boost_round=100)
+        model = lgb.LGBMRegressor(
+            objective="regression",
+            metric="rmse",
+            n_estimators=300,
+            learning_rate=0.01,
+            num_leaves=31,
+            max_depth=-1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            force_row_wise=True,
+        )
+        
+        # Fit the model
+        model.fit(X_train, y_train)
+        
+        # Make predictions on the validation set
+        y_pred = model.predict(X_val)
+        # Calculate RMSLE score
+        score = rmsle_score(y_val, y_pred)
+
+        print(f"RMSLE score for family {family}: {score:.4f}")
+
+        # Store the best model for the family
+        models[family] = model
+    return models
