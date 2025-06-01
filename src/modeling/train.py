@@ -52,7 +52,7 @@ def train_model_for_each_family(train_df):
         # model = lgb.train(params, lgb_train, valid_sets=[lgb_val], num_boost_round=100)
         model = lgb.LGBMRegressor(
             objective="regression",
-            metric="rmse",  # Changed from 'rmsle' to 'rmse' to avoid issues
+            metric="rmse",
             n_estimators=300,
             learning_rate=0.01,
             num_leaves=31,
