@@ -236,13 +236,12 @@ class RollingFeatureTransformer(BaseEstimator, TransformerMixin):
             test_start_date = X["date"].min()
             return df[df["date"] >= test_start_date].copy()
 
-
-# TODO: call function to handle missing date indices in external data
 class ExternalDataMerger(BaseEstimator, TransformerMixin):
     """Merge external datasets (oil, stores, transactions)"""
 
     def __init__(self, date_column="date"):
         self.date_column = date_column
+        self.is_train = True
 
     def set_dataframes(self, oil_df, stores_df, transactions_df):
         """Set external dataframes directly"""
@@ -250,8 +249,21 @@ class ExternalDataMerger(BaseEstimator, TransformerMixin):
         self.stores_df = stores_df
         self.transactions_df = transactions_df
 
+    def set_mode(self, is_train=True):
+        """Set mode for training or prediction"""
+        self.is_train = is_train
+
     def fit(self, X):
-        # Interpolate missing oil prices
+        # save mean of transactions for store_nbr
+        if self.is_train:
+            self.transactions_mean_ = (X.groupby("store_nbr")["transactions"].mean().reset_index()).rename(
+                columns={"transactions": "transactions_mean"})
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+
+        # handle nulls in oil
         all_dates = pd.date_range(
             start=self.oil_df[self.date_column].min(), end=self.oil_df[self.date_column].max()
         )
@@ -265,12 +277,7 @@ class ExternalDataMerger(BaseEstimator, TransformerMixin):
             method="polynomial", order=2
         )
         self.oil_df["dcoilwtico"] = self.oil_df["dcoilwtico"].bfill()
-
-        return self
-
-    def transform(self, X):
-        X = X.copy()
-
+        
         # Merge oil data
         X = X.merge(self.oil_df, on="date", how="left")
 
@@ -278,10 +285,12 @@ class ExternalDataMerger(BaseEstimator, TransformerMixin):
         X = X.merge(self.stores_df, on="store_nbr", how="left")
 
         # Merge transactions data
-        X = X.merge(self.transactions_df, on=["date", "store_nbr"], how="left")
-
-        # Fill missing transactions with 0
-        X["transactions"] = X["transactions"].fillna(0)
+        if self.is_train:
+            X = X.merge(self.transactions_df, on=["date", "store_nbr"], how="left")
+            X["transactions"] = X["transactions"].fillna(0)
+        else:
+            # fill by mean of store_nbr
+            X = X.merge(self.transactions_mean_, on="store_nbr", how="left")
 
         return X
 
