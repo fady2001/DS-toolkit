@@ -259,7 +259,7 @@ class ExternalDataMerger(BaseEstimator, TransformerMixin):
         if self.is_train:
             self.transactions_mean_ = (
                 self.transactions_df.groupby("store_nbr")["transactions"].mean().reset_index()
-            ).rename(columns={"transactions": "transactions_mean"})
+            )
         return self
 
     def transform(self, X):
@@ -301,6 +301,12 @@ class NullHandlerTransformer(BaseEstimator, TransformerMixin):
     """Handle null values for prediction"""
 
     def __init__(self, strategy="drop"):
+        self.strategy = strategy
+        
+    def set_strategy(self, strategy):
+        """Set strategy for handling nulls"""
+        if strategy not in ["drop", "comprehensive"]:
+            raise ValueError("Strategy must be either 'drop' or 'comprehensive'")
         self.strategy = strategy
 
     def fit(self, X, y=None):

@@ -1,3 +1,4 @@
+import pandas as pd
 from sklearn.base import BaseEstimator
 
 
@@ -16,7 +17,8 @@ class FamilyModelSelector(BaseEstimator):
             model = self.models_dict.get(family)
             if model is None:
                 raise ValueError(f"No model found for family: {family}")
-            row_input = row.drop(self.family_col).to_frame().T
+            row_input = row.drop([self.family_col,"sales"]).to_frame().T
+            row_input = row_input.apply(pd.to_numeric, errors='coerce')
             pred = model.predict(row_input)[0]
             preds.append(pred)
         return preds
